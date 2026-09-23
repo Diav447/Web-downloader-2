@@ -1,69 +1,92 @@
-from flask import Flask, request, render_template, jsonify, send_file, after_this_request
+from flask import Flask, request, jsonify, render_template_string
 import yt_dlp
-import os, uuid
+import os
 
 app = Flask(__name__)
-DOWNLOAD_FOLDER = "/tmp"
+
+HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YTLite - Fix Audio</title>
+<style>
+body{background:#0a0a0a;color:white;font-family:sans-serif;padding:20px}
+input{width:70%;padding:12px;border-radius:12px;border:none;background:#222;color:white}
+button{padding:12px 20px;border-radius:12px;border:none;background:#8b5cf6;color:white;font-weight:bold;cursor:pointer}
+.card{background:#18181b;padding:15px;border-radius:12px;margin-top:15px}
+a{color:#a78bfa}
+</style>
+</head>
+<body>
+<h1>YTLite.</h1>
+<p>Semua kualitas ada suara 🔊 no tipu-tipu</p>
+<input id="url" placeholder="https://youtube.com/watch?v=...">
+<button onclick="gas()">GAS</button>
+<div id="result"></div>
+<script>
+async function gas(){
+  let url=document.getElementById('url').value;
+  if(!url)return alert('link mana wee?');
+  document.getElementById('result').innerHTML='Lagi ngeracik video + audio... ⏳';
+  let res=await fetch('/download?url='+encodeURIComponent(url));
+  let data=await res.json();
+  if(data.error){
+    alert('ERROR: '+data.error);
+    document.getElementById('result').innerHTML='';
+    return;
+  }
+  let h='';
+  data.formats.forEach(f=>{
+    h+=`<div class="card"><b>${f.height ? f.height+'p' : 'Audio'} - ${f.ext}</b> (${f.filesize || 'auto'})<br><a href="${f.url}" target="_blank" download>Download</a></div>`;
+  });
+  document.getElementById('result').innerHTML=h;
+}
+</script>
+</body>
+</html>
+"""
+
+# INI OBAT ANTI BOT YOUTUBE 2026
+YDL_OPTS = {
+    'quiet': True,
+    'no_warnings': True,
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['android', 'ios', 'web'],
+            'player_skip': ['webpage', 'configs'],
+        }
+    },
+    'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+}
 
 @app.route('/')
-def home():
-    return render_template('index.html')
-
-@app.route('/api/info', methods=['POST'])
-def get_info():
-    url = request.json.get('url')
-    try:
-        ydl_opts = {'quiet': True, 'no_warnings': True}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            heights = sorted(list(set([f.get('height') for f in info.get('formats', []) if f.get('height')])), reverse=True)
-            formats_list = [{"quality": f"{h}p", "height": h} for h in heights if h >= 144]
-            return jsonify({
-                "title": info.get('title'),
-                "thumbnail": info.get('thumbnail'),
-                "duration": info.get('duration_string'),
-                "uploader": info.get('uploader'),
-                "original_url": url,
-                "formats": formats_list
-            })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+def index():
+    return render_template_string(HTML)
 
 @app.route('/download')
-def download_video():
-    youtube_url = request.args.get('url')
-    quality = request.args.get('q')
-    uid = str(uuid.uuid4())
-    out_template = os.path.join(DOWNLOAD_FOLDER, f"{uid}.%(ext)s")
-
-    ydl_opts = {
-        'format': f'bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={quality}]+bestaudio/best',
-        'outtmpl': out_template,
-        'merge_output_format': 'mp4',
-        'quiet': True
-    }
+def download():
+    url = request.args.get('url')
+    if not url:
+        return jsonify({'error': 'url kosong wee'}), 400
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(youtube_url, download=True)
-            title = info.get('title', 'video')
-
-        final_file = ""
-        for f in os.listdir(DOWNLOAD_FOLDER):
-            if uid in f:
-                final_file = os.path.join(DOWNLOAD_FOLDER, f)
-                break
-
-        @after_this_request
-        def cleanup(response):
-            try:
-                if os.path.exists(final_file):
-                    os.remove(final_file)
-            except: pass
-            return response
-
-        return send_file(final_file, as_attachment=True, download_name=f"{title} - {quality}p.mp4")
+        with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
+            info = ydl.extract_info(url, download=False)
+            formats = []
+            for f in info.get('formats', [])[-15:]: # ambil 15 terakhir biar gak kebanyakan
+                if f.get('url'):
+                    formats.append({
+                        'url': f['url'],
+                        'ext': f.get('ext'),
+                        'height': f.get('height'),
+                        'filesize': f.get('filesize_human') or f.get('filesize'),
+                    })
+            # reverse biar 1080p di atas
+            formats = list(reversed(formats))
+            return jsonify({'title': info.get('title'), 'formats': formats})
     except Exception as e:
-        return f"Error: {e}", 500
+        return jsonify({'error': str(e)}), 500
 
+# Buat Vercel
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+    app.run()
